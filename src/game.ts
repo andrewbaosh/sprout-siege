@@ -4,7 +4,7 @@ import type { Hud } from './hud';
 import { SunManager } from './sun';
 import { Shop } from './shop';
 import { Zombie, type ZombieKind } from './zombies';
-import { PLANT_INFO, createPlant, type Plant, type PlantKind, type Projectile } from './plants';
+import { COB_AREA, CobCannon, PLANT_INFO, createPlant, type Plant, type PlantKind, type Projectile } from './plants';
 import type { Effect } from './effects';
 
 // 第一波：普通僵尸 + 铁桶僵尸，最后 4 只是“一大波”
@@ -17,6 +17,7 @@ const FIRST_RELEASE = 20; // 开局给玩家 20 秒准备
 const CROWD_SIZE = 8;
 const CRATER_TIME = 60; // 弹坑一分钟后修复
 const START_SUN = 50;
+const COB_LINK_RADIUS = 1.6; // 走到玉米加农炮这么近就会连上它
 
 interface Crater {
   col: number;
@@ -42,6 +43,7 @@ export class Game {
   private shop: Shop;
 
   held: PlantKind | null = null;
+  linked: CobCannon | null = null; // 当前连上的玉米加农炮
   state: 'playing' | 'won' | 'lost' = 'playing';
 
   private pending = [...WAVE_1]; // 还没在墓地出现的僵尸
@@ -50,6 +52,7 @@ export class Game {
   private elapsed = 0;
   private animTime = 0;
   private highlight: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  private reticle: THREE.Group;
 
   constructor(private scene: THREE.Scene, private hud: Hud, private onEnd: (won: boolean) => void) {
     this.suns = new SunManager(scene, hud);
@@ -65,6 +68,24 @@ export class Game {
     this.highlight.rotation.x = -Math.PI / 2;
     this.highlight.visible = false;
     scene.add(this.highlight);
+
+    // 玉米加农炮的瞄准框：跟着玩家脚下走
+    this.reticle = new THREE.Group();
+    const fill = new THREE.Mesh(
+      new THREE.PlaneGeometry(COB_AREA, COB_AREA),
+      new THREE.MeshBasicMaterial({ color: 0xff5030, transparent: true, opacity: 0.12, depthWrite: false }),
+    );
+    fill.rotation.x = -Math.PI / 2;
+    const h = COB_AREA / 2;
+    const outline = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-h, 0, -h), new THREE.Vector3(h, 0, -h), new THREE.Vector3(h, 0, h), new THREE.Vector3(-h, 0, h),
+      ]),
+      new THREE.LineBasicMaterial({ color: 0xff5030 }),
+    );
+    this.reticle.add(fill, outline);
+    this.reticle.visible = false;
+    scene.add(this.reticle);
     this.updateHud();
   }
 
@@ -90,9 +111,17 @@ export class Game {
 
     for (const p of this.plants) p.update(dt, this);
     this.plants = this.plants.filter((p) => {
-      if (p.dead) this.scene.remove(p.group);
+      if (p.dead) {
+        this.scene.remove(p.group);
+        if (p === this.linked) {
+          this.linked = null;
+          this.hud.toast('玉米加农炮被吃掉了');
+          this.refreshHint();
+        }
+      }
       return !p.dead;
     });
+    this.checkCobLink(player);
 
     // 遍历副本：黑洞落地时会往列表里加入新的漩涡
     for (const p of [...this.projectiles]) {
@@ -123,6 +152,8 @@ export class Game {
 
     this.updateCraters(dt);
     this.updateHighlight(player);
+    this.reticle.visible = !!this.linked;
+    this.reticle.position.set(player.x, 0.06, player.z);
     this.updateHud();
 
     if (this.remaining === 0) this.end(true);
@@ -145,6 +176,14 @@ export class Game {
   }
 
   addCrater(col: number, row: number) {
+    const existing = this.craters.find((c) => c.col === col && c.row === row);
+    if (existing) {
+      existing.timer = CRATER_TIME;
+      existing.obj.scale.setScalar(1);
+      return;
+    }
+    // 格子上还有植物就不留坑（玉米加农炮不伤植物）
+    if (this.plants.some((p) => !p.dead && p.col === col && p.row === row)) return;
     const { x, z } = tileCenter(col, row);
     const obj = new THREE.Group();
     const pit = new THREE.Mesh(new THREE.CircleGeometry(1.5, 32), new THREE.MeshStandardMaterial({ color: 0x2a1d12 }));
@@ -189,13 +228,37 @@ export class Game {
 
   // ---------- 玩家操作 ----------
 
-  /** 按 E：把手上的植物种在脚下的格子里 */
-  tryPlant(player: THREE.Vector3) {
+  /** 按 E：手上有植物就种下；否则如果连着玉米加农炮，就朝脚下发射 */
+  pressE(player: THREE.Vector3) {
     if (this.state !== 'playing') return;
-    if (!this.held) {
+    if (this.held) {
+      this.tryPlant(player);
+    } else if (this.linked) {
+      this.linked.fire(player, this);
+      this.linked.linked = false;
+      this.linked = null;
+      this.hud.toast('玉米炮弹发射！20 秒后才能再打一发');
+      this.refreshHint();
+    } else {
       this.hud.toast('手上没有植物，先去右边的卡槽光束里拿一个');
-      return;
     }
+  }
+
+  /** 按 Q：放回手上的植物，或者取消玉米加农炮瞄准 */
+  pressQ() {
+    if (this.state !== 'playing') return;
+    if (this.held) {
+      this.returnHeld();
+    } else if (this.linked) {
+      this.linked.linked = false;
+      this.linked = null;
+      this.hud.toast('已取消玉米加农炮瞄准');
+      this.refreshHint();
+    }
+  }
+
+  private tryPlant(player: THREE.Vector3) {
+    if (!this.held) return;
     const tile = tileAt(player.x, player.z);
     if (!tile) {
       this.hud.toast('要站在草坪的格子上才能种');
@@ -211,16 +274,15 @@ export class Game {
     this.plants.push(plant);
     this.scene.add(plant.group);
     this.held = null;
-    this.hud.setHeld(null);
+    this.refreshHint();
   }
 
-  /** 按 Q：把手上的植物放回去，退还阳光 */
-  returnHeld() {
-    if (!this.held || this.state !== 'playing') return;
+  private returnHeld() {
+    if (!this.held) return;
     this.addSun(PLANT_INFO[this.held].price);
     this.hud.toast(`已放回${PLANT_INFO[this.held].name}，退还 ${PLANT_INFO[this.held].price} 阳光`);
     this.held = null;
-    this.hud.setHeld(null);
+    this.refreshHint();
   }
 
   private takeFromShop(kind: PlantKind) {
@@ -235,7 +297,39 @@ export class Game {
     }
     this.hud.addSun(-info.price);
     this.held = kind;
-    this.hud.setHeld(info.name);
+    this.refreshHint();
+  }
+
+  /** 玩家刚走到某个玉米加农炮旁边时连上它 */
+  private checkCobLink(player: THREE.Vector3) {
+    for (const p of this.plants) {
+      if (!(p instanceof CobCannon)) continue;
+      const inside = Math.hypot(player.x - p.x, player.z - p.z) < COB_LINK_RADIUS;
+      const justEntered = inside && !p.playerInside;
+      p.playerInside = inside;
+      if (!justEntered || p === this.linked) continue;
+      if (this.held) {
+        this.hud.toast(`手上有${PLANT_INFO[this.held].name}，先种下再操作玉米加农炮`);
+      } else if (!p.isReady) {
+        this.hud.toast(`玉米加农炮还在装填，还要 ${Math.ceil(p.cooldown)} 秒`);
+      } else {
+        if (this.linked) this.linked.linked = false;
+        this.linked = p;
+        p.linked = true;
+        this.hud.toast('已连上玉米加农炮：走到要炸的位置按 E 发射');
+        this.refreshHint();
+      }
+    }
+  }
+
+  private refreshHint() {
+    if (this.held) {
+      this.hud.setHint(`手上：<b>${PLANT_INFO[this.held].name}</b>　站在草坪格子上按 <kbd>E</kbd> 种下，按 <kbd>Q</kbd> 放回`);
+    } else if (this.linked) {
+      this.hud.setHint(`<b>玉米加农炮</b>已瞄准：走到要炸的位置按 <kbd>E</kbd> 发射，按 <kbd>Q</kbd> 取消`);
+    } else {
+      this.hud.setHint(null);
+    }
   }
 
   private tileBlocked(col: number, row: number): string | null {
@@ -314,6 +408,7 @@ export class Game {
   private end(won: boolean) {
     this.state = won ? 'won' : 'lost';
     this.highlight.visible = false;
+    this.reticle.visible = false;
     this.onEnd(won);
   }
 }

@@ -11,7 +11,7 @@ export const KILL_REWARD: Record<ZombieKind, number> = { normal: 10, bucket: 20 
 const BITE_DAMAGE = 1;
 const BITE_INTERVAL = 1;
 
-type State = 'rising' | 'idle' | 'walking' | 'pulled' | 'dying' | 'ash';
+type State = 'rising' | 'idle' | 'walking' | 'pulled' | 'launched' | 'dying' | 'ash';
 export type ZombieResult = 'remove' | 'entered' | null;
 
 const COLORS = {
@@ -48,6 +48,7 @@ export class Zombie {
   speed = 1;
   waypoints: THREE.Vector3[] = [];
   pullTarget = new THREE.Vector3();
+  private launchVel = new THREE.Vector3();
 
   private phase = Math.random() * 10;
   private timer = 0;
@@ -135,7 +136,7 @@ export class Zombie {
   }
 
   get alive() {
-    return this.state !== 'dying' && this.state !== 'ash';
+    return this.state !== 'dying' && this.state !== 'ash' && this.state !== 'launched';
   }
 
   rise() {
@@ -163,6 +164,18 @@ export class Zombie {
   die(game: Game) {
     if (!this.alive) return;
     this.state = 'dying';
+    this.timer = 0;
+    this.reward(game);
+  }
+
+  /** 被玉米加农炮炸飞：飞上天再摔下来 */
+  launch(game: Game, from: THREE.Vector3) {
+    if (!this.alive) return;
+    const away = this.group.position.clone().sub(from).setY(0);
+    if (away.lengthSq() < 0.01) away.set(1, 0, 0);
+    away.normalize().multiplyScalar(THREE.MathUtils.randFloat(3, 6));
+    this.launchVel.set(away.x, THREE.MathUtils.randFloat(10, 13), away.z);
+    this.state = 'launched';
     this.timer = 0;
     this.reward(game);
   }
@@ -250,6 +263,21 @@ export class Zombie {
           game.addEffect(new Puff(g.position.clone().setY(0.4), 0x2a2522, 1.2, 0.6));
         }
         return t >= 1 ? 'remove' : null;
+      }
+      case 'launched': {
+        this.launchVel.y -= 14 * dt;
+        g.position.addScaledVector(this.launchVel, dt);
+        this.body.rotation.x += dt * 9;
+        this.body.rotation.z += dt * 4;
+        if (g.position.y <= 0 && this.launchVel.y < 0) {
+          // 摔在地上，接着播放倒地后的下沉
+          g.position.y = 0;
+          this.body.rotation.set(-Math.PI / 2, 0, 0);
+          this.state = 'dying';
+          this.timer = 0.6;
+          game.addEffect(new Puff(g.position.clone().setY(0.3), 0x8a7a5a, 0.8, 0.4));
+        }
+        return null;
       }
       case 'pulled': {
         const d = this.pullTarget.clone().sub(g.position).setY(0);

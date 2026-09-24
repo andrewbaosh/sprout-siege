@@ -25,9 +25,10 @@ export class Hud {
     this.remainingEl.textContent = String(n);
   }
 
-  setHeld(name: string | null) {
-    this.heldEl.classList.toggle('show', !!name);
-    if (name) this.heldEl.innerHTML = `手上：<b>${name}</b>　站在草坪格子上按 <kbd>E</kbd> 种下，按 <kbd>Q</kbd> 放回`;
+  /** 屏幕下方的操作提示，null 表示隐藏 */
+  setHint(html: string | null) {
+    this.heldEl.classList.toggle('show', !!html);
+    if (html) this.heldEl.innerHTML = html;
   }
 
   toast(text: string, ms = 3000) {

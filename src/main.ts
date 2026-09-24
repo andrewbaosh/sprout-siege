@@ -52,8 +52,8 @@ player.controls.addEventListener('unlock', () => {
 
 addEventListener('keydown', (e) => {
   if (!player.isLocked && !debug.forcePlay) return;
-  if (e.code === 'KeyE') game.tryPlant(player.position);
-  if (e.code === 'KeyQ') game.returnHeld();
+  if (e.code === 'KeyE') game.pressE(player.position);
+  if (e.code === 'KeyQ') game.pressQ();
 });
 
 function showResult(won: boolean) {

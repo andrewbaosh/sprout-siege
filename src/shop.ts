@@ -20,14 +20,14 @@ interface Slot {
 const AFFORD = new THREE.Color(0x9dff7a);
 const POOR = new THREE.Color(0xff8a6a);
 
-/** 草坪右侧的三个卡槽：走进光束中央就能拿到植物 */
+/** 草坪右侧的卡槽：走进光束中央就能拿到植物 */
 export class Shop {
   private slots: Slot[] = [];
   private time = 0;
 
   constructor(scene: THREE.Scene) {
-    // 面对卡槽时从左到右：机枪射手、毁灭菇、阳光大地
-    const kinds: PlantKind[] = ['gatling', 'doom', 'sunland'];
+    // 面对卡槽时从左到右：机枪射手、毁灭菇、阳光大地、玉米加农炮
+    const kinds: PlantKind[] = ['gatling', 'doom', 'sunland', 'cob'];
     kinds.forEach((kind, i) => {
       const x = -4 - i * 5;
       const z = WORLD.shopZ;
@@ -112,12 +112,12 @@ function makeCardTexture(kind: PlantKind) {
   g.stroke();
 
   roundRect(g, 24, 24, w - 48, 190, 14);
-  g.fillStyle = kind === 'doom' ? '#2c2440' : '#bfe6a8';
+  g.fillStyle = kind === 'doom' ? '#2c2440' : kind === 'cob' ? '#a8d8f0' : '#bfe6a8';
   g.fill();
   drawIcon(g, kind, w / 2, 122);
 
   g.fillStyle = '#3a2e1a';
-  g.font = 'bold 34px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+  g.font = `bold ${info.name.length > 4 ? 30 : 34}px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif`;
   g.textAlign = 'center';
   g.fillText(info.name, w / 2, 256);
 
@@ -172,6 +172,23 @@ function drawIcon(g: CanvasRenderingContext2D, kind: PlantKind, cx: number, cy: 
     for (const [dx, dy] of [[-40, -18], [0, -45], [38, -20], [-15, -5], [22, -2]]) circle(cx + dx, cy + dy, 9, '#c9a6ff');
     circle(cx - 12, cy + 30, 7, '#fff');
     circle(cx + 12, cy + 30, 7, '#fff');
+  } else if (kind === 'cob') {
+    // 小车 + 斜向上的玉米炮管
+    g.save();
+    g.translate(cx - 10, cy + 20);
+    g.rotate(-0.6);
+    g.fillStyle = '#ffd23f';
+    g.beginPath();
+    g.ellipse(40, 0, 58, 22, 0, 0, Math.PI * 2);
+    g.fill();
+    for (let i = 0; i < 6; i++) for (let j = -1; j <= 1; j++) circle(0 + i * 16, j * 11, 4, '#ffe680');
+    g.restore();
+    g.fillStyle = '#2f6d1f';
+    g.fillRect(cx - 70, cy + 24, 130, 30);
+    circle(cx - 45, cy + 60, 14, '#4a3320');
+    circle(cx + 35, cy + 60, 14, '#4a3320');
+    circle(cx + 40, cy + 36, 6, '#fff');
+    circle(cx + 52, cy + 36, 6, '#fff');
   } else {
     // 背后的黑洞
     g.save();

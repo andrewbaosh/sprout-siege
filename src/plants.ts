@@ -1,15 +1,16 @@
 import * as THREE from 'three';
-import { WORLD } from './world';
+import { WORLD, tileAt } from './world';
 import type { Game } from './game';
 import type { Zombie } from './zombies';
 import { Burst, MushroomCloud, Puff } from './effects';
 
-export type PlantKind = 'gatling' | 'doom' | 'sunland';
+export type PlantKind = 'gatling' | 'doom' | 'sunland' | 'cob';
 
 export const PLANT_INFO: Record<PlantKind, { name: string; price: number; color: string }> = {
   gatling: { name: '机枪射手', price: 40, color: '#4caf32' },
   doom: { name: '毁灭菇', price: 20, color: '#6b3fa0' },
   sunland: { name: '阳光大地', price: 50, color: '#e6a800' },
+  cob: { name: '玉米加农炮', price: 100, color: '#c0561e' },
 };
 
 const PEA_DAMAGE = 1;
@@ -22,6 +23,8 @@ const SUNLAND_COOLDOWN = 7;
 const BLACK_HOLE_RADIUS = 3.5;
 const BLACK_HOLE_PULL_TIME = 1.6;
 const CHARM_CHANCE = 0.5; // 被黑洞吸进去的僵尸：一半变成魅惑僵尸，一半炸成灰
+export const COB_COOLDOWN = 20;
+export const COB_AREA = 8; // 落点周围 8×8 的正方形范围
 
 const std = (color: number, extra: THREE.MeshStandardMaterialParameters = {}) =>
   new THREE.MeshStandardMaterial({ color, roughness: 0.7, ...extra });
@@ -95,6 +98,48 @@ export function buildPlantModel(kind: PlantKind): { root: THREE.Group; head: THR
       head.add(spot);
     }
     eyes(root, 0.28, 0.32, 0.12, 0.07);
+  } else if (kind === 'cob') {
+    // 玉米加农炮：绿色小车 + 斜向上的大玉米炮管
+    const cartMat = std(0x2f6d1f);
+    root.add(part(new THREE.BoxGeometry(1.7, 0.4, 1.0), cartMat, 0, 0.45, 0));
+    const wheelMat = std(0x4a3320);
+    for (const wx of [-0.6, 0.6]) {
+      for (const wz of [-0.55, 0.55]) {
+        const wheel = part(new THREE.CylinderGeometry(0.28, 0.28, 0.14, 14), wheelMat, wx, 0.28, wz);
+        wheel.rotation.x = Math.PI / 2;
+        root.add(wheel);
+      }
+    }
+    const huskMat = std(0x4caf32);
+    for (const s of [-1, 1]) {
+      const husk = part(new THREE.ConeGeometry(0.3, 1.8, 6), huskMat, -0.1, 0.8, s * 0.42);
+      husk.rotation.z = -Math.PI / 2 + 0.55;
+      husk.rotation.x = s * 0.25;
+      root.add(husk);
+    }
+    eyes(root, 0.86, 0.5, 0.2, 0.08);
+    head.position.set(-0.3, 0.75, 0);
+    head.rotation.z = 0.6; // 炮管斜向上对着僵尸那边
+    const shell = new THREE.Group();
+    shell.name = 'shell';
+    shell.position.x = 0.85;
+    const cob = part(new THREE.CapsuleGeometry(0.3, 1.2, 6, 14), std(0xffd23f, { emissive: 0x3a2800 }));
+    cob.rotation.z = -Math.PI / 2;
+    shell.add(cob);
+    const kernelMat = std(0xffe680, { emissive: 0x3a2a00 });
+    for (let i = 0; i < 18; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      shell.add(part(new THREE.SphereGeometry(0.07, 6, 5), kernelMat, -0.5 + Math.floor(i / 6) * 0.45, Math.cos(a) * 0.29, Math.sin(a) * 0.29));
+    }
+    head.add(shell);
+    const ready = new THREE.Mesh(
+      new THREE.RingGeometry(1.05, 1.25, 40),
+      new THREE.MeshBasicMaterial({ color: 0x9dff7a, transparent: true, opacity: 0.7, depthWrite: false }),
+    );
+    ready.rotation.x = -Math.PI / 2;
+    ready.position.y = 0.05;
+    ready.name = 'ready';
+    root.add(ready);
   } else {
     // 阳光大地：全黄的玉米投手 + 背后的黑洞
     leaves(root, 0xe6b422);
@@ -216,12 +261,12 @@ export class DoomShroom extends Plant {
     this.group.scale.setScalar(1 + k * 0.5 + Math.sin(k * 40) * 0.08 * k);
     if (this.fuse > 0) return;
 
+    this.dead = true; // 一次性植物，炸完就没了
     game.addEffect(new MushroomCloud(this.x, this.z, DOOM_RADIUS));
     for (const z of game.zombies) {
       if (z.hostile && Math.hypot(z.x - this.x, z.z - this.z) <= DOOM_RADIUS) z.ash(game);
     }
     game.addCrater(this.col, this.row);
-    this.dead = true; // 一次性植物，炸完就没了
   }
 }
 
@@ -247,9 +292,45 @@ export class Sunland extends Plant {
   }
 }
 
+/** 玉米加农炮：不会自己攻击，玩家走过去连上它，再到目标位置按 E 发射 */
+export class CobCannon extends Plant {
+  cooldown = 0;
+  linked = false;
+  playerInside = false; // 用来判断玩家“刚走到”炮旁边
+  private recoil = 0;
+  private shell = this.group.getObjectByName('shell')!;
+  private ready = this.group.getObjectByName('ready') as THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
+
+  get isReady() {
+    return this.cooldown <= 0;
+  }
+
+  fire(target: THREE.Vector3, game: Game) {
+    this.cooldown = COB_COOLDOWN;
+    this.recoil = 0.5;
+    const muzzle = new THREE.Vector3();
+    this.shell.getWorldPosition(muzzle);
+    game.addProjectile(new CobShell(muzzle, target.clone().setY(0)));
+  }
+
+  protected tick(dt: number) {
+    this.cooldown = Math.max(0, this.cooldown - dt);
+    // 冷却时炮管上的玉米慢慢长回来
+    const grown = 1 - this.cooldown / COB_COOLDOWN;
+    this.shell.scale.setScalar(this.isReady ? 1 : 0.2 + 0.6 * grown);
+    this.recoil = Math.max(0, this.recoil - dt);
+    this.head.rotation.z = 0.6 + Math.sin((this.recoil / 0.5) * Math.PI) * 0.25;
+
+    const pulse = 0.55 + Math.sin(performance.now() / 200) * 0.25;
+    this.ready.material.color.setHex(this.linked ? 0xffd23f : this.isReady ? 0x9dff7a : 0x888888);
+    this.ready.material.opacity = this.linked ? pulse + 0.2 : this.isReady ? pulse : 0.4;
+  }
+}
+
 export function createPlant(kind: PlantKind, col: number, row: number, x: number, z: number): Plant {
   if (kind === 'gatling') return new Gatling(kind, col, row, x, z);
   if (kind === 'doom') return new DoomShroom(kind, col, row, x, z);
+  if (kind === 'cob') return new CobCannon(kind, col, row, x, z);
   return new Sunland(kind, col, row, x, z);
 }
 
@@ -343,5 +424,81 @@ class BlackHoleVortex implements Projectile {
       else z.ash(game);
     }
     return true;
+  }
+}
+
+/** 玉米炮弹：先冲上天，停一下，再砸到目标位置 */
+class CobShell implements Projectile {
+  obj = new THREE.Group();
+  private cob: THREE.Group;
+  private marker: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  private t = 0;
+  private static UP = 0.9;
+  private static HANG = 0.7;
+  private static DOWN = 0.8;
+
+  constructor(private from: THREE.Vector3, private target: THREE.Vector3) {
+    this.cob = new THREE.Group();
+    const body = part(new THREE.CapsuleGeometry(0.35, 1.3, 6, 14), std(0xffd23f, { emissive: 0x5a4000 }));
+    this.cob.add(body);
+    const flame = new THREE.Mesh(
+      new THREE.ConeGeometry(0.3, 1, 10),
+      new THREE.MeshBasicMaterial({ color: 0xffa040, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false }),
+    );
+    flame.position.y = -1.2;
+    flame.rotation.x = Math.PI;
+    this.cob.add(flame);
+    this.cob.position.copy(from);
+    // 落点的预警框
+    this.marker = new THREE.Mesh(
+      new THREE.PlaneGeometry(COB_AREA, COB_AREA),
+      new THREE.MeshBasicMaterial({ color: 0xff5030, transparent: true, opacity: 0, depthWrite: false }),
+    );
+    this.marker.rotation.x = -Math.PI / 2;
+    this.marker.position.set(target.x, 0.05, target.z);
+    this.obj.add(this.cob, this.marker);
+  }
+
+  update(dt: number, game: Game) {
+    this.t += dt;
+    const { UP, HANG, DOWN } = CobShell;
+    const t = this.t;
+    if (t < UP) {
+      const k = t / UP;
+      this.cob.position.set(this.from.x, this.from.y + k * k * 40, this.from.z);
+      return false;
+    }
+    if (t < UP + HANG) {
+      this.cob.visible = false;
+      this.marker.material.opacity = ((t - UP) / HANG) * 0.25;
+      return false;
+    }
+    const k = Math.min((t - UP - HANG) / DOWN, 1);
+    this.cob.visible = true;
+    this.cob.rotation.x = Math.PI; // 头朝下
+    this.cob.position.set(this.target.x, 40 * (1 - k * k) + 0.5, this.target.z);
+    this.marker.material.opacity = 0.25 + Math.sin(t * 30) * 0.1;
+    if (k < 1) return false;
+
+    this.explode(game);
+    return true;
+  }
+
+  private explode(game: Game) {
+    const center = this.target;
+    game.addEffect(new Burst(center.clone().setY(0.8), COB_AREA * 0.6, 0xffa040));
+    for (let i = 0; i < 8; i++) {
+      const p = center.clone().add(new THREE.Vector3((Math.random() - 0.5) * COB_AREA, 0.5, (Math.random() - 0.5) * COB_AREA));
+      game.addEffect(new Puff(p, 0x6b625a, 1.4, 1.2));
+    }
+    const half = COB_AREA / 2;
+    for (const z of game.zombies) {
+      if (!z.hostile || Math.abs(z.x - center.x) > half || Math.abs(z.z - center.z) > half) continue;
+      // 戴着铁桶的炸不飞，但会被炸死；普通僵尸直接炸飞
+      if (z.armor > 0) z.die(game);
+      else z.launch(game, center);
+    }
+    const tile = tileAt(center.x, center.z);
+    if (tile) game.addCrater(tile.col, tile.row);
   }
 }
