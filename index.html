@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>萌芽守卫战 Sprout Siege</title>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <div id="hud">
+      <div class="panel">
+        <span class="sun-icon"></span>
+        <span id="sun-count">0</span>
+      </div>
+      <div class="panel">
+        <span class="label">第一波 · 剩余僵尸</span>
+        <span id="remaining-count">0</span>
+      </div>
+    </div>
+
+    <div id="held"></div>
+    <div id="toast"></div>
+
+    <div id="overlay">
+      <div class="card">
+        <h1 id="overlay-title">萌芽守卫战</h1>
+        <p class="sub">Sprout Siege · 第一波</p>
+        <div id="overlay-body">
+          <p class="story">
+            你是一个透明的园丁，僵尸看不见你。<br />
+            捡天上掉下的阳光，到草坪右边的卡槽光束里买植物，<br />
+            别让任何一只僵尸走进小屋！
+          </p>
+          <ul class="keys">
+            <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动</li>
+            <li><kbd>鼠标</kbd> 看方向</li>
+            <li><kbd>Shift</kbd> 奔跑</li>
+            <li><kbd>E</kbd> 种下植物</li>
+            <li><kbd>Q</kbd> 放回植物</li>
+            <li><kbd>Esc</kbd> 暂停</li>
+          </ul>
+        </div>
+        <button id="start">点击开始</button>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
