@@ -26,10 +26,13 @@ const BLACK_HOLE_PULL_TIME = 1.6;
 const CHARM_CHANCE = 0.5; // 被黑洞吸进去的僵尸：一半变成魅惑僵尸，一半炸成灰
 export const COB_COOLDOWN = 20;
 const ELECTRIC_COOLDOWN = 3.5;
-const ULT_CHANCE = 1; // 每次攻击开启大招的概率（现在是 100%）
-const ULT_PEAS = 13; // 大招一次打出的电能豌豆数
-const ULT_SPREAD = 0.7; // 大招最大偏角（弧度，约 40°）
-const ELECTRIC_KILL_CHANCE = 0.1; // 每颗电能豌豆直接把僵尸电死的概率
+const ULT_CHANCE = 1; // 每次攻击开启大招的概率：100%
+const ULT_DURATION = 10; // 大招持续 10 秒
+const ULT_RAYS = 13; // 扇形里的方向数
+const ULT_VOLLEY_INTERVAL = 0.3; // 每 0.3 秒所有方向各打一颗 → 10 秒约 430 颗
+const ULT_SPREAD = 0.7; // 扇形最大偏角（弧度，约 40°）
+const ULT_KILL_CHANCE = 0.9; // 大招电能豌豆直接电死的概率
+const ELECTRIC_KILL_CHANCE = 0.1; // 普通电能豌豆直接电死的概率
 export const COB_AREA = 8; // 落点周围 8×8 的正方形范围
 
 const std = (color: number, extra: THREE.MeshStandardMaterialParameters = {}) =>
@@ -366,49 +369,55 @@ export class CobCannon extends Plant {
   }
 }
 
-/** 电能超级机枪豌豆：电能豌豆无视护甲、有概率直接电死；攻击时开大招扇形散射 */
+/** 电能超级机枪豌豆：电能豌豆无视护甲、有概率直接电死；每次攻击都开 10 秒的扇形弹幕大招 */
 export class ElectricGatling extends Plant {
   private cooldown = 0.5;
-  private queue: number[] = []; // 待发射的豌豆角度
-  private shotTimer = 0;
-  private shotInterval = 0.05;
+  private ultLeft = 0; // 大招剩余时间
+  private volleyTimer = 0;
+  private burstLeft = 0; // 普通攻击（没触发大招时）剩余发数
   private barrel = this.head.getObjectByName('barrel') as THREE.Mesh<THREE.CylinderGeometry, THREE.MeshStandardMaterial>;
   private time = Math.random() * 10;
 
   protected tick(dt: number, game: Game) {
     this.time += dt;
-    this.cooldown -= dt;
 
-    if (this.queue.length > 0) {
-      this.shotTimer -= dt;
-      if (this.shotTimer <= 0) {
-        const angle = this.queue.shift()!;
-        this.head.rotation.y = -angle; // 炮口跟着转
-        const dir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
-        const muzzle = new THREE.Vector3(this.x, 1.1, this.z).addScaledVector(dir, 1);
-        game.addProjectile(new ElectricPea(muzzle, dir));
-        this.shotTimer = this.shotInterval;
+    if (this.ultLeft > 0) {
+      // 大招：每隔一小段时间朝扇形里的每个方向各打一颗，每个方向都连成一长串
+      this.ultLeft -= dt;
+      this.volleyTimer -= dt;
+      if (this.volleyTimer <= 0) {
+        this.volleyTimer = ULT_VOLLEY_INTERVAL;
+        const step = ULT_SPREAD / ((ULT_RAYS - 1) / 2);
+        for (let i = 0; i < ULT_RAYS; i++) this.shoot((i - (ULT_RAYS - 1) / 2) * step, ULT_KILL_CHANCE, game);
       }
+      this.head.rotation.y = Math.sin(this.time * 25) * 0.05; // 开火时的抖动
+      if (this.ultLeft <= 0) this.cooldown = ELECTRIC_COOLDOWN;
+    } else if (this.burstLeft > 0) {
+      this.volleyTimer -= dt;
+      if (this.volleyTimer <= 0) {
+        this.volleyTimer = 0.09;
+        this.burstLeft--;
+        this.shoot(0, ELECTRIC_KILL_CHANCE, game);
+      }
+      if (this.burstLeft === 0) this.cooldown = ELECTRIC_COOLDOWN;
     } else {
       this.head.rotation.y *= 1 - Math.min(1, dt * 6);
+      this.cooldown -= dt;
       if (this.cooldown <= 0 && game.hostileAhead(this.x, this.z, ULT_SPREAD)) {
-        this.cooldown = ELECTRIC_COOLDOWN;
-        if (Math.random() < ULT_CHANCE) {
-          // 大招：从正前方开始，一左一右依次往两边散开
-          const step = ULT_SPREAD / ((ULT_PEAS - 1) / 2);
-          this.queue = [0];
-          for (let i = 1; this.queue.length < ULT_PEAS; i++) this.queue.push(i * step, -i * step);
-          this.shotInterval = 0.05;
-        } else {
-          this.queue = [0, 0, 0, 0, 0, 0];
-          this.shotInterval = 0.09;
-        }
-        this.shotTimer = 0;
+        this.volleyTimer = 0;
+        if (Math.random() < ULT_CHANCE) this.ultLeft = ULT_DURATION;
+        else this.burstLeft = 6;
       }
     }
 
-    const charging = this.queue.length > 0 ? 1.5 : 0.6 + Math.sin(this.time * 4) * 0.3;
-    this.barrel.material.emissiveIntensity = charging;
+    const firing = this.ultLeft > 0 || this.burstLeft > 0;
+    this.barrel.material.emissiveIntensity = firing ? 1.5 + Math.random() * 0.8 : 0.6 + Math.sin(this.time * 4) * 0.3;
+  }
+
+  private shoot(angle: number, killChance: number, game: Game) {
+    const dir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+    const muzzle = new THREE.Vector3(this.x, 1.1, this.z).addScaledVector(dir, 1);
+    game.addProjectile(new ElectricPea(muzzle, dir, killChance));
   }
 }
 
@@ -603,7 +612,7 @@ class ElectricPea implements Projectile {
   obj = new THREE.Group();
   private spark: THREE.Sprite;
 
-  constructor(pos: THREE.Vector3, private dir: THREE.Vector3) {
+  constructor(pos: THREE.Vector3, private dir: THREE.Vector3, private killChance: number) {
     this.obj.add(new THREE.Mesh(electricGeo, electricMat));
     this.spark = new THREE.Sprite(sparkMat);
     this.spark.scale.setScalar(0.9);
@@ -617,7 +626,7 @@ class ElectricPea implements Projectile {
     this.spark.scale.setScalar(0.7 + Math.random() * 0.5); // 噼啪闪烁
     for (const z of game.zombies) {
       if (!z.hostile || Math.hypot(z.x - p.x, z.z - p.z) > 0.65) continue;
-      const killed = z.zap(PEA_DAMAGE, ELECTRIC_KILL_CHANCE, game);
+      const killed = z.zap(PEA_DAMAGE, this.killChance, game);
       game.addEffect(killed ? new Burst(p.clone(), 1.4, 0x7ff6ff) : new Puff(p.clone(), 0x7ff6ff, 0.4, 0.2));
       return true;
     }
