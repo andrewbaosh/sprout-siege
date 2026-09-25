@@ -26,10 +26,10 @@ export class Shop {
   private time = 0;
 
   constructor(scene: THREE.Scene) {
-    // 面对卡槽时从左到右：机枪射手、毁灭菇、阳光大地、玉米加农炮
-    const kinds: PlantKind[] = ['gatling', 'doom', 'sunland', 'cob'];
+    // 面对卡槽时从左到右：机枪射手、毁灭菇、阳光大地、玉米加农炮、电能超级机枪豌豆
+    const kinds: PlantKind[] = ['gatling', 'doom', 'sunland', 'cob', 'electric'];
     kinds.forEach((kind, i) => {
-      const x = -4 - i * 5;
+      const x = -3 - i * 4;
       const z = WORLD.shopZ;
 
       const card = new THREE.Mesh(
@@ -112,12 +112,16 @@ function makeCardTexture(kind: PlantKind) {
   g.stroke();
 
   roundRect(g, 24, 24, w - 48, 190, 14);
-  g.fillStyle = kind === 'doom' ? '#2c2440' : kind === 'cob' ? '#a8d8f0' : '#bfe6a8';
+  g.fillStyle = kind === 'doom' || kind === 'electric' ? '#1c2440' : kind === 'cob' ? '#a8d8f0' : '#bfe6a8';
   g.fill();
   drawIcon(g, kind, w / 2, 122);
 
   g.fillStyle = '#3a2e1a';
-  g.font = `bold ${info.name.length > 4 ? 30 : 34}px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif`;
+  // 名字太长就缩小字号，保证放得下
+  let fontSize = 34;
+  do {
+    g.font = `bold ${fontSize}px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif`;
+  } while (g.measureText(info.name).width > w - 40 && --fontSize > 16);
   g.textAlign = 'center';
   g.fillText(info.name, w / 2, 256);
 
@@ -172,6 +176,27 @@ function drawIcon(g: CanvasRenderingContext2D, kind: PlantKind, cx: number, cy: 
     for (const [dx, dy] of [[-40, -18], [0, -45], [38, -20], [-15, -5], [22, -2]]) circle(cx + dx, cy + dy, 9, '#c9a6ff');
     circle(cx - 12, cy + 30, 7, '#fff');
     circle(cx + 12, cy + 30, 7, '#fff');
+  } else if (kind === 'electric') {
+    g.fillStyle = '#2a6fb0';
+    g.fillRect(cx - 6, cy + 20, 12, 60);
+    g.fillStyle = '#7ff6ff';
+    g.shadowColor = '#7ff6ff';
+    g.shadowBlur = 16;
+    for (let i = 0; i < 4; i++) g.fillRect(cx + 30, cy - 28 + i * 13, 60, 11);
+    g.shadowBlur = 0;
+    circle(cx, cy, 52, '#49b8f0');
+    g.fillStyle = '#1d3f7a';
+    g.beginPath();
+    g.arc(cx, cy - 4, 56, Math.PI, 0);
+    g.fill();
+    // 闪电
+    g.fillStyle = '#ffe14a';
+    g.beginPath();
+    for (const [px, py] of [[4, -95], [-18, -55], [-2, -55], [-14, -25], [18, -65], [2, -65], [16, -95]]) g.lineTo(cx + px, cy + py);
+    g.closePath();
+    g.fill();
+    circle(cx + 16, cy + 6, 11, '#fff');
+    circle(cx + 20, cy + 6, 6, '#111');
   } else if (kind === 'cob') {
     // 小车 + 斜向上的玉米炮管
     g.save();

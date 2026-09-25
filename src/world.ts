@@ -99,8 +99,8 @@ function buildLawn(scene: THREE.Scene) {
   // 卡槽所在的小广场
   const plaza = mesh(new THREE.CircleGeometry(1, 40), std(0xcfc3a6), false);
   plaza.rotation.x = -Math.PI / 2;
-  plaza.scale.set(11, 3, 1);
-  plaza.position.set(-11.5, 0.02, WORLD.shopZ);
+  plaza.scale.set(10.5, 3, 1);
+  plaza.position.set(-11, 0.02, WORLD.shopZ);
   scene.add(plaza);
 }
 

@@ -4,13 +4,14 @@ import type { Game } from './game';
 import type { Zombie } from './zombies';
 import { Burst, MushroomCloud, Puff } from './effects';
 
-export type PlantKind = 'gatling' | 'doom' | 'sunland' | 'cob';
+export type PlantKind = 'gatling' | 'doom' | 'sunland' | 'cob' | 'electric';
 
 export const PLANT_INFO: Record<PlantKind, { name: string; price: number; color: string }> = {
   gatling: { name: '机枪射手', price: 40, color: '#4caf32' },
   doom: { name: '毁灭菇', price: 20, color: '#6b3fa0' },
   sunland: { name: '阳光大地', price: 50, color: '#e6a800' },
   cob: { name: '玉米加农炮', price: 100, color: '#c0561e' },
+  electric: { name: '电能超级机枪豌豆', price: 150, color: '#1e88e5' },
 };
 
 const PEA_DAMAGE = 1;
@@ -24,6 +25,11 @@ const BLACK_HOLE_RADIUS = 3.5;
 const BLACK_HOLE_PULL_TIME = 1.6;
 const CHARM_CHANCE = 0.5; // 被黑洞吸进去的僵尸：一半变成魅惑僵尸，一半炸成灰
 export const COB_COOLDOWN = 20;
+const ELECTRIC_COOLDOWN = 3.5;
+const ULT_CHANCE = 1; // 每次攻击开启大招的概率（现在是 100%）
+const ULT_PEAS = 13; // 大招一次打出的电能豌豆数
+const ULT_SPREAD = 0.7; // 大招最大偏角（弧度，约 40°）
+const ELECTRIC_KILL_CHANCE = 0.1; // 每颗电能豌豆直接把僵尸电死的概率
 export const COB_AREA = 8; // 落点周围 8×8 的正方形范围
 
 const std = (color: number, extra: THREE.MeshStandardMaterialParameters = {}) =>
@@ -98,6 +104,39 @@ export function buildPlantModel(kind: PlantKind): { root: THREE.Group; head: THR
       head.add(spot);
     }
     eyes(root, 0.28, 0.32, 0.12, 0.07);
+  } else if (kind === 'electric') {
+    // 电能超级机枪豌豆：蓝色大头 + 发光炮管 + 头盔上的闪电
+    leaves(root, 0x2a6fb0);
+    root.add(part(new THREE.CylinderGeometry(0.1, 0.13, 0.95, 8), std(0x2a6fb0), 0, 0.52, 0));
+    head.position.y = 1.22;
+    head.add(part(new THREE.SphereGeometry(0.56, 20, 14), std(0x49b8f0, { emissive: 0x0a3050 })));
+    const helmetMat = std(0x1d3f7a, { metalness: 0.4 });
+    head.add(part(new THREE.SphereGeometry(0.6, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2), helmetMat, 0, 0.05, 0));
+    head.add(part(new THREE.BoxGeometry(0.4, 0.06, 0.56), helmetMat, 0.5, 0.08, 0));
+    const barrelMat = std(0x7ff6ff, { emissive: 0x2aa0c0 });
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      const b = part(new THREE.CylinderGeometry(0.11, 0.11, 0.7, 10), barrelMat, 0.68, Math.sin(a) * 0.16 - 0.1, Math.cos(a) * 0.16);
+      b.rotation.z = -Math.PI / 2;
+      if (i === 0) b.name = 'barrel';
+      head.add(b);
+    }
+    const bolt = new THREE.Shape();
+    bolt.moveTo(0.05, 0.45);
+    bolt.lineTo(-0.12, 0.1);
+    bolt.lineTo(0.02, 0.1);
+    bolt.lineTo(-0.08, -0.2);
+    bolt.lineTo(0.14, 0.18);
+    bolt.lineTo(0.0, 0.18);
+    bolt.lineTo(0.12, 0.45);
+    bolt.closePath();
+    const boltMesh = part(
+      new THREE.ExtrudeGeometry(bolt, { depth: 0.08, bevelEnabled: false }),
+      std(0xffe14a, { emissive: 0xaa8800 }),
+      -0.05, 0.62, -0.04,
+    );
+    head.add(boltMesh);
+    eyes(head, 0.42, 0.24, 0.22);
   } else if (kind === 'cob') {
     // 玉米加农炮：绿色小车 + 斜向上的大玉米炮管
     const cartMat = std(0x2f6d1f);
@@ -327,7 +366,54 @@ export class CobCannon extends Plant {
   }
 }
 
+/** 电能超级机枪豌豆：电能豌豆无视护甲、有概率直接电死；攻击时开大招扇形散射 */
+export class ElectricGatling extends Plant {
+  private cooldown = 0.5;
+  private queue: number[] = []; // 待发射的豌豆角度
+  private shotTimer = 0;
+  private shotInterval = 0.05;
+  private barrel = this.head.getObjectByName('barrel') as THREE.Mesh<THREE.CylinderGeometry, THREE.MeshStandardMaterial>;
+  private time = Math.random() * 10;
+
+  protected tick(dt: number, game: Game) {
+    this.time += dt;
+    this.cooldown -= dt;
+
+    if (this.queue.length > 0) {
+      this.shotTimer -= dt;
+      if (this.shotTimer <= 0) {
+        const angle = this.queue.shift()!;
+        this.head.rotation.y = -angle; // 炮口跟着转
+        const dir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+        const muzzle = new THREE.Vector3(this.x, 1.1, this.z).addScaledVector(dir, 1);
+        game.addProjectile(new ElectricPea(muzzle, dir));
+        this.shotTimer = this.shotInterval;
+      }
+    } else {
+      this.head.rotation.y *= 1 - Math.min(1, dt * 6);
+      if (this.cooldown <= 0 && game.hostileAhead(this.x, this.z, ULT_SPREAD)) {
+        this.cooldown = ELECTRIC_COOLDOWN;
+        if (Math.random() < ULT_CHANCE) {
+          // 大招：从正前方开始，一左一右依次往两边散开
+          const step = ULT_SPREAD / ((ULT_PEAS - 1) / 2);
+          this.queue = [0];
+          for (let i = 1; this.queue.length < ULT_PEAS; i++) this.queue.push(i * step, -i * step);
+          this.shotInterval = 0.05;
+        } else {
+          this.queue = [0, 0, 0, 0, 0, 0];
+          this.shotInterval = 0.09;
+        }
+        this.shotTimer = 0;
+      }
+    }
+
+    const charging = this.queue.length > 0 ? 1.5 : 0.6 + Math.sin(this.time * 4) * 0.3;
+    this.barrel.material.emissiveIntensity = charging;
+  }
+}
+
 export function createPlant(kind: PlantKind, col: number, row: number, x: number, z: number): Plant {
+  if (kind === 'electric') return new ElectricGatling(kind, col, row, x, z);
   if (kind === 'gatling') return new Gatling(kind, col, row, x, z);
   if (kind === 'doom') return new DoomShroom(kind, col, row, x, z);
   if (kind === 'cob') return new CobCannon(kind, col, row, x, z);
@@ -501,4 +587,55 @@ class CobShell implements Projectile {
     const tile = tileAt(center.x, center.z);
     if (tile) game.addCrater(tile.col, tile.row);
   }
+}
+
+const electricGeo = new THREE.SphereGeometry(0.17, 10, 8);
+const electricMat = new THREE.MeshBasicMaterial({ color: 0xc8ffff });
+const sparkMat = new THREE.SpriteMaterial({
+  map: makeGlowTexture('rgba(120,240,255,1)'),
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+});
+
+/** 电能豌豆：可以斜着飞，打中无视护甲，有概率直接电死 */
+class ElectricPea implements Projectile {
+  obj = new THREE.Group();
+  private spark: THREE.Sprite;
+
+  constructor(pos: THREE.Vector3, private dir: THREE.Vector3) {
+    this.obj.add(new THREE.Mesh(electricGeo, electricMat));
+    this.spark = new THREE.Sprite(sparkMat);
+    this.spark.scale.setScalar(0.9);
+    this.obj.add(this.spark);
+    this.obj.position.copy(pos);
+  }
+
+  update(dt: number, game: Game) {
+    const p = this.obj.position;
+    p.addScaledVector(this.dir, PEA_SPEED * dt);
+    this.spark.scale.setScalar(0.7 + Math.random() * 0.5); // 噼啪闪烁
+    for (const z of game.zombies) {
+      if (!z.hostile || Math.hypot(z.x - p.x, z.z - p.z) > 0.65) continue;
+      const killed = z.zap(PEA_DAMAGE, ELECTRIC_KILL_CHANCE, game);
+      game.addEffect(killed ? new Burst(p.clone(), 1.4, 0x7ff6ff) : new Puff(p.clone(), 0x7ff6ff, 0.4, 0.2));
+      return true;
+    }
+    return p.x > WORLD.lawnMaxX + 3 || Math.abs(p.z) > WORLD.lawnMaxZ + 3;
+  }
+}
+
+function makeGlowTexture(color: string) {
+  const size = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const g = canvas.getContext('2d')!;
+  const grad = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  grad.addColorStop(0, color);
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }

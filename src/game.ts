@@ -209,6 +209,17 @@ export class Game {
     return best;
   }
 
+  /** 植物前方（正前方同一行，或在 maxAngle 扇形内）是否有在草坪上的敌对僵尸 */
+  hostileAhead(x: number, z: number, maxAngle: number) {
+    return this.zombies.some((zb) => {
+      if (!zb.hostile) return false;
+      const dx = zb.x - x;
+      const dz = Math.abs(zb.z - z);
+      if (dx < -0.3 || zb.x > WORLD.lawnMaxX + 1.2) return false;
+      return dz < 1 || Math.atan2(dz, dx) <= maxAngle;
+    });
+  }
+
   /** 僵尸前方挡路的东西：敌对僵尸会被植物和魅惑僵尸挡住，魅惑僵尸会被敌对僵尸挡住 */
   findBlocker(z: Zombie): Blocker | null {
     if (z.charmed) {

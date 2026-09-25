@@ -54,6 +54,7 @@ export class Zombie {
   private timer = 0;
   private biteTimer = 0;
   private flash = 0;
+  private zapped = false; // 被电死的：倒下时一直冒蓝光
 
   constructor(readonly kind: ZombieKind) {
     this.skinMat = new THREE.MeshStandardMaterial({ color: COLORS.skin, roughness: 0.9 });
@@ -168,6 +169,23 @@ export class Zombie {
     this.reward(game);
   }
 
+  /**
+   * 被电能豌豆打中：直接扣本体血（无视铁桶），并有概率不管剩多少血直接电死。
+   * 返回是否被电死。
+   */
+  zap(damage: number, killChance: number, game: Game): boolean {
+    if (!this.alive) return false;
+    this.flash = 0.1;
+    if (Math.random() < killChance) {
+      this.zapped = true;
+      this.die(game);
+      return true;
+    }
+    this.hp -= damage;
+    if (this.hp <= 0) this.die(game);
+    return false;
+  }
+
   /** 被玉米加农炮炸飞：飞上天再摔下来 */
   launch(game: Game, from: THREE.Vector3) {
     if (!this.alive) return;
@@ -233,7 +251,8 @@ export class Zombie {
     this.timer += dt;
 
     this.flash = Math.max(0, this.flash - dt);
-    const glow = this.flash > 0 ? 0x555555 : this.charmed ? 0x4a3300 : 0x000000;
+    const zapFlicker = this.zapped && this.timer < 1.2 && Math.random() < 0.6;
+    const glow = zapFlicker ? 0x2299ff : this.flash > 0 ? 0x555555 : this.charmed ? 0x4a3300 : 0x000000;
     if (this.state !== 'ash') for (const m of [this.skinMat, this.shirtMat, this.pantsMat]) m.emissive.setHex(glow);
     if (this.halo) this.halo.rotation.z += dt * 2;
 
