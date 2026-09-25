@@ -3,15 +3,30 @@ import { WORLD } from './world';
 import type { Game } from './game';
 import { FallingObject, Puff } from './effects';
 
-export type ZombieKind = 'normal' | 'bucket';
+export type ZombieKind = 'normal' | 'bucket' | 'giant' | 'imp';
 
 export const ZOMBIE_HP = 6; // 普通僵尸挨 6 发豌豆
 export const BUCKET_ARMOR = 12; // 铁桶再挡 12 发
-export const KILL_REWARD: Record<ZombieKind, number> = { normal: 10, bucket: 20 };
+const GIANT_HP = 1000;
+const GIANT_THROW_HP = 300; // 血量低于这个就把背上的小鬼扔出去
+export const GIANT_INSTAKILL_DAMAGE = 300; // 秒杀类攻击对巨人只造成这么多伤害
+const IMP_HP = 3;
+const GIANT_SCALE = 2.2;
+const IMP_SCALE = 0.6;
+const IMP_THROW_DISTANCE = 12;
+const HP_BAR_W = 0.9;
+export const KILL_REWARD: Record<ZombieKind, number> = { normal: 10, bucket: 20, giant: 50, imp: 5 };
+/** 出发时的移动速度范围 */
+export const ZOMBIE_SPEED: Record<ZombieKind, [number, number]> = {
+  normal: [0.9, 1.3],
+  bucket: [0.9, 1.3],
+  giant: [0.45, 0.55],
+  imp: [3, 3.4],
+};
 const BITE_DAMAGE = 1;
 const BITE_INTERVAL = 1;
 
-type State = 'rising' | 'idle' | 'walking' | 'pulled' | 'launched' | 'dying' | 'ash';
+type State = 'rising' | 'idle' | 'walking' | 'pulled' | 'launched' | 'thrown' | 'dying' | 'ash';
 export type ZombieResult = 'remove' | 'entered' | null;
 
 const COLORS = {
@@ -40,6 +55,13 @@ export class Zombie {
   private pantsMat: THREE.MeshStandardMaterial;
   private bucket: THREE.Mesh | null = null;
   private halo: THREE.Mesh | null = null;
+  private imp: Zombie | null = null; // 巨人背上的小鬼
+  private hpBar: THREE.Sprite | null = null;
+  private hpBarBg: THREE.Sprite | null = null;
+  private smashTimer = 0;
+  private throwTimer = -1; // >= 0 表示正在扔小鬼
+  private flightFrom = new THREE.Vector3();
+  private flightTo = new THREE.Vector3();
 
   state: State = 'idle';
   hp = ZOMBIE_HP;
@@ -78,6 +100,7 @@ export class Zombie {
     torso.position.y = 1.45;
     const tie = box(0.12, 0.6, 0.02, tieMat);
     tie.position.set(0, 1.55, 0.26);
+    tie.visible = kind !== 'imp';
     this.body.add(torso, tie);
 
     this.head.position.set(0, 1.95, 0.05);
@@ -117,6 +140,55 @@ export class Zombie {
     }
 
     this.group.add(this.body);
+
+    if (kind === 'giant') this.buildGiant();
+    if (kind === 'imp') {
+      this.hp = IMP_HP;
+      this.group.scale.setScalar(IMP_SCALE);
+      this.skinMat.color.set(0xa8c77e);
+      this.shirtMat.color.set(0xb8a88a);
+    }
+  }
+
+  /** 巨人：放大身体，右手拖着电线杆，背上背着小鬼，头顶有血条 */
+  private buildGiant() {
+    this.hp = GIANT_HP;
+    this.group.scale.setScalar(GIANT_SCALE);
+    this.shirtMat.color.set(0x5a4632);
+    const pole = box(0.14, 1.1, 0.14, new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 0.9 }));
+    pole.position.y = -1.45;
+    this.armR.add(pole);
+
+    this.imp = new Zombie('imp');
+    this.imp.group.scale.setScalar(IMP_SCALE / GIANT_SCALE);
+    this.imp.group.position.set(0, 1.45, -0.42);
+    this.body.add(this.imp.group);
+
+    const bg = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0x331111, depthTest: false }));
+    bg.scale.set(HP_BAR_W + 0.04, 0.1, 1);
+    bg.position.y = 2.75;
+    this.hpBar = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0x6adf3a, depthTest: false }));
+    this.hpBar.center.set(0, 0.5);
+    this.hpBar.scale.set(HP_BAR_W, 0.07, 1);
+    this.hpBar.position.set(-HP_BAR_W / 2, 2.75, 0);
+    bg.renderOrder = 10;
+    this.hpBar.renderOrder = 11;
+    this.hpBarBg = bg;
+    this.group.add(bg, this.hpBar);
+  }
+
+  get isGiant() {
+    return this.kind === 'giant';
+  }
+
+  /** 身体半宽：用来判断子弹有没有打中 */
+  get radius() {
+    return this.isGiant ? 1.0 : this.kind === 'imp' ? 0.3 : 0.45;
+  }
+
+  /** 离挡路的东西多近就停下来攻击 */
+  get reach() {
+    return this.isGiant ? 2.0 : 0.9;
   }
 
   get x() {
@@ -138,6 +210,15 @@ export class Zombie {
 
   get alive() {
     return this.state !== 'dying' && this.state !== 'ash' && this.state !== 'launched';
+  }
+
+  /** 被巨人扔出去：飞一段抛物线后落地开跑 */
+  throwTo(from: THREE.Vector3, to: THREE.Vector3) {
+    this.flightFrom.copy(from);
+    this.flightTo.copy(to);
+    this.group.position.copy(from);
+    this.state = 'thrown';
+    this.timer = 0;
   }
 
   rise() {
@@ -177,6 +258,10 @@ export class Zombie {
     if (!this.alive) return false;
     this.flash = 0.1;
     if (Math.random() < killChance) {
+      if (this.isGiant) {
+        this.hit(GIANT_INSTAKILL_DAMAGE, game);
+        return false;
+      }
       this.zapped = true;
       this.die(game);
       return true;
@@ -189,6 +274,10 @@ export class Zombie {
   /** 被玉米加农炮炸飞：飞上天再摔下来 */
   launch(game: Game, from: THREE.Vector3) {
     if (!this.alive) return;
+    if (this.isGiant) {
+      this.hit(GIANT_INSTAKILL_DAMAGE, game);
+      return;
+    }
     const away = this.group.position.clone().sub(from).setY(0);
     if (away.lengthSq() < 0.01) away.set(1, 0, 0);
     away.normalize().multiplyScalar(THREE.MathUtils.randFloat(3, 6));
@@ -201,6 +290,10 @@ export class Zombie {
   /** 被炸成灰 */
   ash(game: Game) {
     if (!this.alive) return;
+    if (this.isGiant) {
+      this.hit(GIANT_INSTAKILL_DAMAGE, game);
+      return;
+    }
     this.state = 'ash';
     this.timer = 0;
     this.group.position.y = 0;
@@ -215,6 +308,10 @@ export class Zombie {
   /** 变成阳光魅惑僵尸：掉转方向，走回墓地，路上攻击僵尸 */
   charm(game: Game) {
     if (!this.alive) return;
+    if (this.isGiant) {
+      this.hit(GIANT_INSTAKILL_DAMAGE, game);
+      return;
+    }
     this.dropBucket(game);
     this.charmed = true;
     this.hp = ZOMBIE_HP;
@@ -255,6 +352,12 @@ export class Zombie {
     const glow = zapFlicker ? 0x2299ff : this.flash > 0 ? 0x555555 : this.charmed ? 0x4a3300 : 0x000000;
     if (this.state !== 'ash') for (const m of [this.skinMat, this.shirtMat, this.pantsMat]) m.emissive.setHex(glow);
     if (this.halo) this.halo.rotation.z += dt * 2;
+    if (this.hpBar) {
+      const k = Math.max(0, this.hp) / GIANT_HP;
+      this.hpBar.scale.x = HP_BAR_W * k;
+      this.hpBar.material.color.setHex(this.hp < GIANT_THROW_HP ? 0xe8452c : 0x6adf3a);
+      this.hpBar.visible = this.hpBarBg!.visible = this.alive;
+    }
 
     switch (this.state) {
       case 'rising': {
@@ -267,8 +370,22 @@ export class Zombie {
       case 'idle':
         this.body.rotation.z = Math.sin(time * 1.3 + this.phase) * 0.06;
         this.armL.rotation.x = -1.1 + Math.sin(time * 1.1 + this.phase) * 0.2;
-        this.armR.rotation.x = -1.1 + Math.sin(time * 1.3 + this.phase + 1) * 0.2;
+        this.armR.rotation.x = this.isGiant ? -0.3 : -1.1 + Math.sin(time * 1.3 + this.phase + 1) * 0.2;
         return null;
+      case 'thrown': {
+        const t = Math.min(this.timer / 1.1, 1);
+        g.position.lerpVectors(this.flightFrom, this.flightTo, t);
+        g.position.y = THREE.MathUtils.lerp(this.flightFrom.y, 0, t) + 6 * 4 * t * (1 - t) * 0.5;
+        this.body.rotation.x = -t * Math.PI * 2; // 空中翻跟头
+        if (t >= 1) {
+          g.position.y = 0;
+          this.body.rotation.x = 0;
+          this.state = 'walking';
+          this.waypoints = game.houseRoute(this.z);
+          game.addEffect(new Puff(g.position.clone().setY(0.2), 0x8a7a5a, 0.6, 0.3));
+        }
+        return null;
+      }
       case 'dying': {
         const t = Math.min(this.timer / 0.6, 1);
         this.body.rotation.x = -Math.PI / 2 * t * t;
@@ -317,7 +434,27 @@ export class Zombie {
     g.position.y = 0;
     this.body.rotation.z = 0;
 
+    if (this.imp && (this.throwTimer >= 0 || this.hp < GIANT_THROW_HP)) return this.throwImp(dt, game);
+
     const blocker = game.findBlocker(this);
+    if (blocker && this.isGiant) {
+      // 举起电线杆，一棒子砸下去
+      this.faceToward(blocker.x - this.x, blocker.z - this.z, dt);
+      this.legL.rotation.x = this.legR.rotation.x = 0;
+      const before = this.smashTimer;
+      this.smashTimer += dt;
+      const t = this.smashTimer;
+      if (t < 0.8) this.armR.rotation.x = THREE.MathUtils.lerp(-0.3, -3.0, t / 0.8);
+      else if (t < 0.95) this.armR.rotation.x = THREE.MathUtils.lerp(-3.0, -0.6, (t - 0.8) / 0.15);
+      else this.armR.rotation.x = -0.6;
+      if (before < 0.95 && t >= 0.95) {
+        blocker.hit(9999, game);
+        game.addEffect(new Puff(new THREE.Vector3(blocker.x, 0.4, blocker.z), 0x8a7a5a, 1.4, 0.4));
+      }
+      if (t > 1.5) this.smashTimer = 0;
+      return null;
+    }
+    this.smashTimer = 0;
     if (blocker) {
       // 停下来啃
       this.phase += dt * 10;
@@ -366,6 +503,36 @@ export class Zombie {
     this.legR.rotation.x = -Math.sin(this.phase) * 0.5;
     this.armL.rotation.x = -Math.PI / 2 + Math.sin(this.phase * 0.5) * 0.12;
     this.armR.rotation.x = -Math.PI / 2 - Math.sin(this.phase * 0.5) * 0.12;
+    if (this.isGiant) {
+      // 巨人拖着电线杆走
+      this.armR.rotation.x = -0.3 + Math.sin(this.phase) * 0.08;
+      this.armL.rotation.x = -Math.sin(this.phase) * 0.4;
+    }
+    return null;
+  }
+
+  /** 巨人把背上的小鬼往前扔 */
+  private throwImp(dt: number, game: Game): ZombieResult {
+    if (this.throwTimer < 0) this.throwTimer = 0;
+    const before = this.throwTimer;
+    this.throwTimer += dt;
+    const t = this.throwTimer;
+    this.legL.rotation.x = this.legR.rotation.x = 0;
+    this.armL.rotation.x = t < 0.6 ? THREE.MathUtils.lerp(0, -2.8, t / 0.6) : THREE.MathUtils.lerp(-2.8, -1.2, Math.min(1, (t - 0.6) / 0.2));
+    if (before < 0.6 && t >= 0.6 && this.imp) {
+      const imp = this.imp;
+      const from = new THREE.Vector3();
+      imp.group.getWorldPosition(from);
+      this.body.remove(imp.group);
+      imp.group.scale.setScalar(IMP_SCALE);
+      imp.group.rotation.y = this.group.rotation.y;
+      const toX = Math.max(this.x - IMP_THROW_DISTANCE, WORLD.houseFrontX + 4);
+      imp.throwTo(from, new THREE.Vector3(toX, 0, this.z));
+      imp.speed = THREE.MathUtils.randFloat(...ZOMBIE_SPEED.imp);
+      game.addZombie(imp);
+      this.imp = null;
+    }
+    if (t > 1) this.throwTimer = -1;
     return null;
   }
 

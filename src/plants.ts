@@ -451,7 +451,7 @@ export class Pea implements Projectile {
     const p = this.obj.position;
     p.x += PEA_SPEED * dt;
     for (const z of game.zombies) {
-      if (z.hostile && Math.abs(z.x - p.x) < 0.45 && Math.abs(z.z - p.z) < 0.9) {
+      if (z.hostile && Math.abs(z.x - p.x) < z.radius && Math.abs(z.z - p.z) < 0.45 + z.radius) {
         z.hit(PEA_DAMAGE, game);
         game.addEffect(new Puff(p.clone(), 0x9be86a, 0.35, 0.2));
         return true;
@@ -502,7 +502,7 @@ class BlackHoleVortex implements Projectile {
     this.obj.getObjectByName('disk')!.rotation.z += dt * 10;
 
     for (const z of game.zombies) {
-      if (!z.hostile || this.captured.has(z)) continue;
+      if (!z.hostile || z.isGiant || this.captured.has(z)) continue; // 巨人太重，吸不动
       if (Math.hypot(z.x - this.obj.position.x, z.z - this.obj.position.z) <= BLACK_HOLE_RADIUS) {
         this.captured.add(z);
         z.state = 'pulled';
@@ -513,6 +513,11 @@ class BlackHoleVortex implements Projectile {
     if (this.t < BLACK_HOLE_PULL_TIME) return false;
 
     game.addEffect(new Burst(this.obj.position.clone(), BLACK_HOLE_RADIUS));
+    for (const z of game.zombies) {
+      if (z.hostile && z.isGiant && Math.hypot(z.x - this.obj.position.x, z.z - this.obj.position.z) <= BLACK_HOLE_RADIUS) {
+        game.giantResist(z);
+      }
+    }
     for (const z of this.captured) {
       if (z.state !== 'pulled') continue; // 途中已经被打死了
       if (Math.random() < CHARM_CHANCE) z.charm(game);
@@ -625,7 +630,7 @@ class ElectricPea implements Projectile {
     p.addScaledVector(this.dir, PEA_SPEED * dt);
     this.spark.scale.setScalar(0.7 + Math.random() * 0.5); // 噼啪闪烁
     for (const z of game.zombies) {
-      if (!z.hostile || Math.hypot(z.x - p.x, z.z - p.z) > 0.65) continue;
+      if (!z.hostile || Math.hypot(z.x - p.x, z.z - p.z) > z.radius + 0.2) continue;
       const killed = z.zap(PEA_DAMAGE, this.killChance, game);
       game.addEffect(killed ? new Burst(p.clone(), 1.4, 0x7ff6ff) : new Puff(p.clone(), 0x7ff6ff, 0.4, 0.2));
       return true;

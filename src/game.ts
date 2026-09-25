@@ -3,16 +3,16 @@ import { WORLD, TILE_H, TILE_W, laneZ, tileAt, tileCenter } from './world';
 import type { Hud } from './hud';
 import { SunManager } from './sun';
 import { Shop } from './shop';
-import { Zombie, type ZombieKind } from './zombies';
+import { GIANT_INSTAKILL_DAMAGE, ZOMBIE_SPEED, Zombie, type ZombieKind } from './zombies';
 import { COB_AREA, CobCannon, PLANT_INFO, createPlant, type Plant, type PlantKind, type Projectile } from './plants';
 import type { Effect } from './effects';
 
-// 第一波：普通僵尸 + 铁桶僵尸，最后 4 只是“一大波”
+// 第一波：普通僵尸 + 铁桶僵尸，最后 5 只是“一大波”，压轴的是巨人
 const WAVE_1: ZombieKind[] = [
   'normal', 'normal', 'normal', 'bucket', 'normal', 'normal', 'bucket', 'normal',
-  'normal', 'bucket', 'normal', 'bucket',
+  'normal', 'bucket', 'normal', 'bucket', 'giant',
 ];
-const FINAL_RUSH = 4;
+const FINAL_RUSH = 5;
 const FIRST_RELEASE = 20; // 开局给玩家 20 秒准备
 const CROWD_SIZE = 8;
 const CRATER_TIME = 60; // 弹坑一分钟后修复
@@ -165,6 +165,26 @@ export class Game {
     this.hud.addSun(amount);
   }
 
+  /** 半路加入的僵尸（巨人扔出来的小鬼） */
+  addZombie(z: Zombie) {
+    this.zombies.push(z);
+    this.scene.add(z.group);
+  }
+
+  /** 从某一行穿过草坪、走进小屋的路线 */
+  houseRoute(z: number) {
+    return [
+      new THREE.Vector3(WORLD.lawnMinX - 0.5, 0, z),
+      new THREE.Vector3(WORLD.houseFrontX + 1, 0, WORLD.doorZ),
+      new THREE.Vector3(WORLD.houseFrontX - 1.8, 0, WORLD.doorZ), // 穿过门洞进屋
+    ];
+  }
+
+  /** 秒杀类攻击：巨人只扣血 */
+  giantResist(z: Zombie) {
+    z.hit(GIANT_INSTAKILL_DAMAGE, this);
+  }
+
   addEffect(e: Effect) {
     this.effects.push(e);
     this.scene.add(e.obj);
@@ -224,15 +244,16 @@ export class Game {
   findBlocker(z: Zombie): Blocker | null {
     if (z.charmed) {
       for (const o of this.zombies) {
-        if (o.hostile && o.state === 'walking' && Math.abs(o.z - z.z) < 1 && o.x - z.x >= 0 && o.x - z.x < 1) return o;
+        const gap = o.x - z.x;
+        if (o.hostile && o.state === 'walking' && Math.abs(o.z - z.z) < 1 + o.radius && gap >= 0 && gap < 0.55 + o.radius) return o;
       }
       return null;
     }
     for (const p of this.plants) {
-      if (Math.abs(p.z - z.z) < 1.2 && z.x - p.x > -0.2 && z.x - p.x < 0.9) return p;
+      if (Math.abs(p.z - z.z) < 1.2 && z.x - p.x > -0.2 && z.x - p.x < z.reach) return p;
     }
     for (const o of this.zombies) {
-      if (o.fightingAlly && Math.abs(o.z - z.z) < 1 && z.x - o.x >= 0 && z.x - o.x < 1) return o;
+      if (o.fightingAlly && Math.abs(o.z - z.z) < 1 && z.x - o.x >= 0 && z.x - o.x < z.reach + 0.1) return o;
     }
     return null;
   }
@@ -378,13 +399,8 @@ export class Game {
     }
     const z = idle[Math.floor(Math.random() * idle.length)];
     const lz = laneZ(Math.floor(Math.random() * WORLD.lanes));
-    z.waypoints = [
-      new THREE.Vector3(WORLD.lawnMaxX + 1, 0, lz),
-      new THREE.Vector3(WORLD.lawnMinX - 0.5, 0, lz),
-      new THREE.Vector3(WORLD.houseFrontX + 1, 0, WORLD.doorZ),
-      new THREE.Vector3(WORLD.houseFrontX - 1.8, 0, WORLD.doorZ), // 穿过门洞进屋
-    ];
-    z.speed = THREE.MathUtils.randFloat(0.9, 1.3);
+    z.waypoints = [new THREE.Vector3(WORLD.lawnMaxX + 1, 0, lz), ...this.houseRoute(lz)];
+    z.speed = THREE.MathUtils.randFloat(...ZOMBIE_SPEED[z.kind]);
     z.state = 'walking';
     this.released++;
     this.spawnCrowdZombie(true); // 墓地里再爬出一只补位
